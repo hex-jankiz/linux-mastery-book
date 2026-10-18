@@ -1,0 +1,16 @@
+# Security: Ignore all credentials, secrets, tokens, and environment files
+.env
+.env.*
+*.key
+*.pem
+*.token
+credentials.json
+secrets/
+*bot*
+*.py
+*.log
+
+# OS & Temp files
+.DS_Store
+Thumbs.db
+desktop.ini

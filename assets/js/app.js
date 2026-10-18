@@ -169,24 +169,37 @@
 
   /* ---------------- Page Dimensions Calculation ---------------- */
   function computeBookDimensions() {
-    const stageWidth = bookStageEl.clientWidth - 40;
-    const stageHeight = bookStageEl.clientHeight - 30;
+    // Ensure stage dimensions are always valid positive numbers
+    const stageWidth = Math.max(280, (bookStageEl && bookStageEl.clientWidth > 0) ? bookStageEl.clientWidth : (window.innerWidth || 360));
+    const stageHeight = Math.max(380, (bookStageEl && bookStageEl.clientHeight > 0) ? bookStageEl.clientHeight : (window.innerHeight || 640));
     const isPortrait = stageWidth < 768 || (stageWidth / stageHeight) < 1.15;
 
     let targetWidth, targetHeight, pageWidth;
 
     if (isPortrait) {
-      // Single Page Mode
-      pageWidth = Math.min(520, stageWidth);
-      targetHeight = Math.min(stageHeight, Math.round(pageWidth * 1.42));
-      pageWidth = Math.round(targetHeight / 1.42);
+      // Single Page Mode (Mobile and Narrow Screens)
+      // Allow book to utilize full phone screen width with balanced margins
+      const availableW = Math.min(540, stageWidth - 14);
+      const availableH = Math.max(360, stageHeight - 96);
+
+      // Book single page ratio: 1 : 1.42
+      let testW = availableW;
+      let testH = Math.round(testW * 1.42);
+
+      if (testH > availableH) {
+        testH = availableH;
+        testW = Math.round(testH / 1.42);
+      }
+
+      pageWidth = Math.max(260, testW);
+      targetHeight = Math.max(360, testH);
       targetWidth = pageWidth;
     } else {
-      // Two-Page Spread Mode
-      const maxSpreadWidth = Math.min(1150, stageWidth);
-      const maxHeight = Math.min(800, stageHeight);
+      // Two-Page Spread Mode (Desktop & Landscape Tablets)
+      const maxSpreadWidth = Math.min(1250, stageWidth - 30);
+      const maxHeight = Math.max(400, stageHeight - 110);
 
-      // Book aspect ratio ~ 1.42 per single page, so spread aspect ratio is 2 / 1.42 = ~1.41
+      // Spread aspect ratio: 2 / 1.42 = ~1.41
       let testHeight = maxHeight;
       let testSpreadWidth = Math.round(testHeight * 1.41);
 
@@ -195,8 +208,8 @@
         testHeight = Math.round(testSpreadWidth / 1.41);
       }
 
-      targetWidth = testSpreadWidth;
-      targetHeight = testHeight;
+      targetWidth = Math.max(540, testSpreadWidth);
+      targetHeight = Math.max(380, testHeight);
       pageWidth = Math.round(targetWidth / 2);
     }
 
@@ -224,20 +237,36 @@
     return (totalBookPages - 1) - physicalIndex;
   }
 
+  function getOrCreateContainer() {
+    let container = document.getElementById('flipbook-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'flipbook-container';
+      if (bookStageEl) bookStageEl.appendChild(container);
+    } else if (!container.parentElement && bookStageEl) {
+      bookStageEl.appendChild(container);
+    }
+    return container;
+  }
+
+  let activeBookOrientation = null;
+
   /* ---------------- Auto-Pagination & StPageFlip Initialization ---------------- */
   function rePaginate(targetPage = null) {
     if (isPaginating) return;
+    if (document.hidden) return; // Skip repagination when tab is hidden in background
     isPaginating = true;
 
     // Show loading indicator
     if (loadingOverlayEl) loadingOverlayEl.classList.remove('hidden');
 
     // Remember reading position (logical page index)
-    const previousLogical = targetPage !== null ? targetPage : state.currentPage;
+    const previousLogical = targetPage !== null ? targetPage : (typeof state.currentPage === 'number' && !isNaN(state.currentPage) ? state.currentPage : 0);
 
     setTimeout(() => {
       try {
         const dims = computeBookDimensions();
+        activeBookOrientation = dims.isPortrait ? 'portrait' : 'landscape';
 
         // 1. Destroy existing flip instance
         if (pageFlipInstance) {
@@ -249,7 +278,8 @@
           pageFlipInstance = null;
         }
 
-        containerEl.innerHTML = '';
+        const container = getOrCreateContainer();
+        container.innerHTML = '';
 
         // 2. Paginate book content
         paginator = new BookPaginator(BOOK_METADATA, CHAPTERS);
@@ -268,19 +298,19 @@
         const pagesToLoad = isRTL() ? [...currentPages].reverse() : currentPages;
 
         // Append page elements into container
-        pagesToLoad.forEach(p => containerEl.appendChild(p));
+        pagesToLoad.forEach(p => container.appendChild(p));
 
         // 3. Initialize StPageFlip
-        const clampedLogical = Math.min(Math.max(0, previousLogical), totalBookPages - 1);
+        const clampedLogical = Math.min(Math.max(0, isNaN(previousLogical) ? 0 : previousLogical), totalBookPages - 1);
         const startPhysical = logicalToPhysical(clampedLogical);
 
-        pageFlipInstance = new St.PageFlip(containerEl, {
+        pageFlipInstance = new St.PageFlip(container, {
           width: dims.pageWidth,
           height: dims.pageHeight,
           size: 'fixed',
-          minWidth: 280,
+          minWidth: 260,
           maxWidth: 900,
-          minHeight: 380,
+          minHeight: 360,
           maxHeight: 1200,
           drawShadow: true,
           flippingTime: 700,
@@ -289,8 +319,8 @@
           autoSize: false,
           maxShadowOpacity: 0.65,
           showCover: true,
-          mobileScrollSupport: false,
-          swipeDistance: 25,
+          mobileScrollSupport: true,
+          swipeDistance: 20,
           clickEventForward: true,
           useMouseEvents: true,
           showPageCorners: true,
@@ -621,12 +651,60 @@
     }
   });
 
-  /* ---------------- Window Resize Handling ---------------- */
+  /* ---------------- Window Resize & Visibility Handling ---------------- */
   window.addEventListener('resize', () => {
     clearTimeout(resizeDebounceTimer);
     resizeDebounceTimer = setTimeout(() => {
-      rePaginate();
+      if (document.hidden) return;
+      const dims = computeBookDimensions();
+      const newOrientation = dims.isPortrait ? 'portrait' : 'landscape';
+
+      if (activeBookOrientation !== newOrientation) {
+        // Mode switch between single page (mobile) and 2-page spread (desktop)
+        rePaginate(state.currentPage);
+      } else if (pageFlipInstance) {
+        try {
+          pageFlipInstance.update();
+        } catch (e) {
+          rePaginate(state.currentPage);
+        }
+      } else {
+        rePaginate(state.currentPage);
+      }
     }, 250);
+  });
+
+  // When user returns to tab / unlocks phone / resumes browser
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      setTimeout(() => {
+        const container = document.getElementById('flipbook-container');
+        if (!container || !container.children.length || !pageFlipInstance) {
+          rePaginate(state.currentPage);
+        } else {
+          try {
+            pageFlipInstance.update();
+          } catch (e) {
+            rePaginate(state.currentPage);
+          }
+        }
+      }, 80);
+    }
+  });
+
+  window.addEventListener('pageshow', () => {
+    setTimeout(() => {
+      const container = document.getElementById('flipbook-container');
+      if (!container || !container.children.length || !pageFlipInstance) {
+        rePaginate(state.currentPage);
+      } else {
+        try {
+          pageFlipInstance.update();
+        } catch (e) {
+          rePaginate(state.currentPage);
+        }
+      }
+    }, 80);
   });
 
   /* ---------------- UI Event Listeners ---------------- */
